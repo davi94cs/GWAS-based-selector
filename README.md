@@ -1,4 +1,4 @@
-# GWAS Selector
+# GWAS-based Selector
 
 ## Background
 ## What is Pyseer?
