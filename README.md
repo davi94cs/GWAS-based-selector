@@ -1,7 +1,7 @@
 # GWAS-based Selector
 
 ## Background
-## What is Pyseer?
 ## Inputs
+## Process
 ## Outputs
-## Workflow
+
