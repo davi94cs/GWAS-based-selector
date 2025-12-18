@@ -3,7 +3,7 @@
 **GWAS-based Selector** is a Python tool that implements a **population-aware,
 multiclass GWAS-driven feature selection pipeline** for **cgMLST allelic data**.
 
-It wraps **Pyseer** and extends it to:
+It wraps **Pyseer** [Pyseer repository](https://github.com/mgalardini/pyseer) and extends it to:
 - handle **categorical cgMLST alleles**
 - run **one-vs-rest (OVR) GWAS** for multiclass phenotypes
 - scale to thousands of loci via **block-wise parallel execution**
@@ -30,9 +30,7 @@ The GWAS-based selector addresses this by:
 - selecting loci based on **statistical association, not correlation**
 - reducing dimensionality while preserving biological signal
 
----
-
-### What Is Pyseer and how It is used here
+### How Pyseer is used here
 
 **Pyseer** is a microbial GWAS engine that tests each genetic variant using
 a model of the form:
