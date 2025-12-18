@@ -136,36 +136,36 @@ on cgMLST allelic data. The process is designed to be **statistically robust**, 
 
 6. For each phenotype class (One-vs-Rest):
    - build a binary phenotype vector
-   - y_bin = 1{phenotype == class}
-   - split all variants into blocks of size block_size
+   - `y_bin = 1{phenotype == class}`
+   - split all variants into blocks of size `block_size`
    - for each block (parallel execution):
-         - apply pattern-threshold filtering (pre-Pyseer)
-         - remove variants that are:
-                  -- monomorphic
-                  -- too rare in cases or controls
-                  (phenotype-dependent structural filter)
-         - generate an RTAB presence/absence matrix
-           (samples × filtered variants)
-         - run Pyseer using:
-                  - RTAB block
-                  - binary phenotype
-                  - aligned distance matrix
-                  - Multidimensional Scaling (MDS) components
-         - extract (variant, p-value) pairs
-         - merge results across all blocks
-         - compute q-values using Benjamini–Hochberg FDR
-         - apply a double statistical filter:
-                  - p-value ≤ Bonferroni threshold
-                  - q-value ≤ FDR threshold
-         - map variants back to loci
-         - aggregate variants at the locus level
-           (minimum q-value per locus, q_min)
-         - optional Top-K selection
-         - retain the K loci with the highest significance
-         (highest −log10(q_min))
-
-7. Aggregate selected loci across classes
+     - apply pattern-threshold filtering (pre-Pyseer)
+     - remove variants that are:
+       - monomorphic
+       - too rare in cases or controls
+       - (phenotype-dependent structural filter)
+     - generate an RTAB presence/absence matrix  
+       *(samples × filtered variants)*
+     - run Pyseer using:
+       - RTAB block
+       - binary phenotype
+       - aligned distance matrix
+       - Multidimensional Scaling (MDS) components
+     - extract `(variant, p-value)` pairs
+     - merge results across all blocks
+     - compute q-values using Benjamini–Hochberg FDR
+     - apply a double statistical filter:
+       - p-value ≤ Bonferroni threshold
+       - q-value ≤ FDR threshold
+     - map variants back to loci
+     - aggregate variants at the locus level:
+       - minimum q-value per locus (`q_min`)
+     - optional Top-K selection
+     - retain the K loci with the highest significance  
+       *(highest −log10(q_min))*
+7. Aggregate selected loci across classes  
 8. Save outputs
+
 
 ---
 
