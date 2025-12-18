@@ -252,27 +252,21 @@ If Conda is not already installed, download and install **Miniconda**
 
 Follow the instructions for your operating system (Linux, macOS, or Windows/WSL).
 
-### 2. Create environment
+### 2. Download project and create environment
 
-After installation, create your conda environment (e.g. gwas_selector_env):
+After installation of Conda, download the project folder. Then, create your conda environment using `env.yml` (dependencies file):
 
 ```bash
-conda create -n gwas_selector_env python=3.11 -y
-conda activate gwas_selector_env
+conda env create -f env.yml
+conda activate gwas_env
 ```
 
-### 3. Install dependencies
+### 3. Usage
 
-Download the repository. Then:
+Activated the `gwas_env`, procede with:
 
 ```bash
 cd <repo_name>
-```
-
-From the repository:
-
-```bash
-pip install -r requirements.txt
 ```
 
 Example of usage pattern from cli:
