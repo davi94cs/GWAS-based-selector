@@ -143,7 +143,7 @@ on cgMLST allelic data. The process is designed to be **statistically robust**, 
      - remove variants that are:
        - monomorphic
        - too rare in cases or controls
-       - (phenotype-dependent structural filter)
+       (phenotype-dependent structural filter)
      - generate an RTAB presence/absence matrix  
        *(samples × filtered variants)*
      - run Pyseer using:
