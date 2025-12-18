@@ -43,7 +43,7 @@ phenotype ~ variant + population_structure
 
 Population structure is modeled using:
 - a pairwise genomic distance matrix
-- MDS components derived from that matrix
+- Multidimensional Scaling (MDS) components derived from that matrix
 - linear or linear mixed models
 
 Pyseer outputs association statistics (p-values) for each variant. GWAS-based Selector builds on Pyseer by:
