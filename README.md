@@ -81,7 +81,7 @@ Sample-level phenotype labels used for One-vs-Rest GWAS.
 - **Rows**: samples
 - **Column**: categorical phenotype
 
-| ceppoID | phenotype |
+| sampleID | phenotype |
 |---------|-----------|
 | S1 | p1 |
 | S2 | p2 |
