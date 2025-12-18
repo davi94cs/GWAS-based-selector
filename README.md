@@ -83,10 +83,10 @@ Sample-level phenotype labels used for One-vs-Rest GWAS.
 
 | ceppoID | phenotype |
 |---------|-----------|
-| S1 | poultry |
-| S2 | ruminant |
-| S3 | poultry |
-| S4 | wild_birds |
+| S1 | p1 |
+| S2 | p2 |
+| S3 | p1 |
+| S4 | p3 |
 
 ### 3. Distance matrix
 
@@ -201,7 +201,7 @@ Human-readable summary of the analysis, including:
 **Example:**
 
 ```text
-## Class 'poultry'
+## Class 'p1'
 significant_variants_after_threshold: 12
 final_selected_loci: 5
 
