@@ -4,7 +4,7 @@ Pyseer GWAS wrapper for cgMLST data (categorical) with population correction.
 
 Input required:
 - subset_cgMLST.csv      (columns: sampleID, Locus1, ..., LocusN; categorical/allelic values)
-- subset_phenotypes.csv  (columns: sampleID, categorical target (poultry, ruminants, wild_birds))
+- subset_phenotypes.csv  (columns: sampleID, categorical target)
 - distance.tsv           (SQUARE MATRIX samples x samples; diagonal=0)
 
 Output generated:
@@ -524,13 +524,7 @@ def run_ovr_gwas_for_class(label: str, y_bin: pd.Series, cg: pd.DataFrame, dista
         with ProcessPoolExecutor(max_workers=workers) as ex:
             for bi, block_variants in enumerate(blocks):
                 # 1) pattern-threshold per blocco 
-                filtered_block_variants = filter_variants_by_pattern_threshold(
-                    cg=cg,
-                    block_variants=block_variants,
-                    y_bin=y_bin,
-                    min_case=min_case_count,
-                    min_control=min_control_count,
-                    logger=logger)
+                filtered_block_variants = filter_variants_by_pattern_threshold(cg=cg, block_variants=block_variants, y_bin=y_bin, min_case=min_case_count, min_control=min_control_count, logger=logger)
                 if not filtered_block_variants:
                     logger.info(f"[OVR:{label}] block {bi+1}/{n_blocks} skipped after pattern "
                                 f"threshold (0 variants kept).")
@@ -540,12 +534,7 @@ def run_ovr_gwas_for_class(label: str, y_bin: pd.Series, cg: pd.DataFrame, dista
                 bdir = os.path.join(tmpdir, f"block_{bi:05d}")
                 os.makedirs(bdir, exist_ok=True)
                 rtab_path = os.path.join(bdir, "block.rtab")
-                write_rtab_block_stream(
-                    cg.reset_index(),
-                    "ceppoID",
-                    filtered_block_variants,
-                    rtab_path,
-                    logger)
+                write_rtab_block_stream(cg.reset_index(), "ceppoID", filtered_block_variants, rtab_path, logger)
                 del filtered_block_variants
                 # 3) Output associazioni pyseer per questo blocco
                 out_path = os.path.join(bdir, "out.tsv")
@@ -947,6 +936,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-# python3 GWAS/GWAS_selector.py GWAS/GWAS_INPUT/subset_cgMLST_monoID.csv GWAS/GWAS_INPUT/subset_phenotypes_monoID.csv GWAS/GWAS_INPUT/distance_clean.tsv --out GWAS/GWAS_OUTPUT/top75 --log GWAS/GWAS_OUTPUT/top75/log.txt --pyseer pyseer --id-col id --phen-col target_IZSAM --block-size 1000 --workers 3 --cpu 3 --mds 10 --maf 0.001 --use-patterns-bonferroni --alpha-patterns 0.001 --min-case-count 5 --min-control-count 5 --fdr 0.001 --k 75 --multi union
