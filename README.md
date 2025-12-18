@@ -1,4 +1,4 @@
-# GWAS-based Selector
+# GWAS-based Selector (v.1.0.0-alpha)
 
 **GWAS-based Selector** is a Python tool that implements a **population-aware,
 multiclass GWAS-driven feature selection pipeline** for **cgMLST allelic data**.
