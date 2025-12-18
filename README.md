@@ -67,7 +67,7 @@ Allelic profile matrix used to derive GWAS variants.
 - **Columns**: loci
 - **Values**: categorical allele identifiers
 
-| ceppoID | locusA | locusB | locusC | locusD |
+| sampleID | locusA | locusB | locusC | locusD |
 |---------|--------|--------|--------|--------|
 | S1 | 3 | 1 | 12 | 4 |
 | S2 | 0 | 1 | 5 | 4 |
