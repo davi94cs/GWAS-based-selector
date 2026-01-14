@@ -139,7 +139,6 @@ on cgMLST allelic data. The process is designed to be **statistically robust**, 
    - `y_bin = 1{phenotype == class}`
    - split all variants into blocks of size `block_size`
    - for each block (parallel execution):
-     - apply pattern-threshold filtering (pre-Pyseer)
      - remove variants that are:
        - monomorphic
        - too rare in cases or controls
@@ -300,6 +299,14 @@ To deactivate the environment (after the tool usage):
 ```bash
 conda deactivate
 ```
+
+## Next steps
+
+The future steps are:
+- improve the computational efficiency in terms of space and time
+- adapt the tool for other mutation types
+- test on larger datasets
+
 
 
 
