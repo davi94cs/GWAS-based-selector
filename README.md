@@ -271,7 +271,7 @@ cd <repo_name>
 Example of usage pattern from cli:
 
 ```bash
-python3 GWAS-based-selector.py \
+python3 GWAS_based_selector.py \
   GWAS_INPUT/cgmlst.csv \
   GWAS_INPUT/phenotypes.csv \
   GWAS_INPUT/distance_matrix.tsv \
