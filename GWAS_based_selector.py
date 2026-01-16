@@ -24,7 +24,7 @@ import pickle  # Serialize/deserialize Python objects to/from byte streams (for 
 import logging  # Configurable logging framework (levels, handlers, formatting) for structured runtime messages
 import tempfile  # Create secure temporary files/directories that auto-clean when closed
 import subprocess  # Spawn and manage external processes/commands; capture their output/return codes
-from typing import List, Tuple, Dict  # Type hints for readability and static analysis: annotate list/tuple/dict types
+from typing import List, Tuple, Dict, Optional  # Type hints for readability and static analysis: annotate list/tuple/dict types
 import numpy as np  # Core numerical array library: vectorized computation, linear algebra, random numbers
 import pandas as pd  # Data analysis library: DataFrame/Series for tabular data, CSV/TSV I/O, grouping, joins
 from concurrent.futures import ProcessPoolExecutor, as_completed  # High-level multiprocessing: run functions in parallel across processes; as_completed iterates results as workers finish
@@ -218,56 +218,51 @@ def subset_order_distance(D: pd.DataFrame, ids: pd.Index, logger: logging.Logger
 
 ### VARIANTS GENERATOR ---> VARIANTS (ALLELES) UTILITIES ###
 
-def enumerate_variants_from_cgmlst(df: pd.DataFrame, sample_col: str) -> List[Tuple[str, List[str]]]:
-
+def maf_filter_variants_per_locus(cg: pd.DataFrame, maf: Optional[float], logger=None) -> List[str]:
     """
-    Enumerate categorical variants (alleles) for each locus in a cgMLST-style DataFrame.
+    Efficient MAF filter for allele-based variants (locus_allele) computed per locus.
 
-    - If `sample_col` exists, uses it as index (sample IDs).
-    - Iterates over all remaining columns (each representing a locus).
-    - For each locus, extracts its unique non-missing categorical values (alleles).
-    - Converts each allele to string form and stores it in a list.
-    - Returns a list of tuples: (locus_name, [allele_1, allele_2, ...]).
+    Parameters:
+    - cg : pd.DataFrame
+        - cgMLST/wgMLST table indexed by sample ID, with loci as columns.
+        - Values are alleles (int/str), possibly with missing values.
+    - maf : float or None
+        - MAF threshold in (0, 0.5]. If None or <= 0, no filtering is performed.
+    - logger : logger or None
+        - Optional logger.
+
+    Returns:
+    - List[str]
+        - List of variants "locus_allele" that pass maf <= freq <= (1 - maf).
     """
 
-    # Lavora su una copia per non toccare df originale
-    if sample_col in df.columns:
-        df_w = df.set_index(sample_col).copy()
-    else:
-        df_w = df.copy()
-    out: List[Tuple[str, List[str]]] = []
-    for locus in df_w.columns:
-        s = df_w[locus]
-        # Scarta i missing, altrimenti ti ritrovi l'allele "nan"
-        s = s.dropna()
+    if maf is None or maf <= 0.0:
+        # No MAF filtering: enumerate all observed alleles
+        all_vars: List[str] = []
+        for locus in cg.columns:
+            # dropna to avoid "nan" being treated as an allele
+            alleles = cg[locus].dropna().astype(str).unique().tolist()
+            all_vars.extend([f"{locus}_{a}" for a in alleles])
+        if logger:
+            logger.info(f"[MAF] disabled | variants={len(all_vars)}")
+        return all_vars
+    if maf > 0.5:
+        raise ValueError("maf must be <= 0.5")
+    n = len(cg)
+    out: List[str] = []
+    for locus in cg.columns:
+        # Convert once per locus
+        s = cg[locus].dropna().astype(str)
         if s.empty:
-            # nessun allele osservato per questo locus → lo saltiamo
             continue
-        cats = s.astype("category").cat.categories
-        alleles = [str(a) for a in cats]
-        out.append((locus, alleles))
+        counts = s.value_counts(dropna=True)
+        freqs = counts / float(n)  # note: using total N (including missing) for consistency
+        # keep alleles with maf <= f <= 1-maf
+        keep_alleles = freqs[(freqs >= maf) & (freqs <= (1.0 - maf))].index.tolist()
+        out.extend([f"{locus}_{a}" for a in keep_alleles])
+    if logger:
+        logger.info(f"[MAF] maf_min={maf} | variants_kept={len(out)}")
     return out
-
-def variants_to_strings(locus_levels: List[Tuple[str, List[str]]]) -> List[str]:
-
-    """
-    Flatten a list of (locus, alleles) pairs into full variant name strings.
-
-    - For each (locus, [alleles]) pair, concatenates locus and allele using an underscore
-      (e.g., "locus_allele").
-    - Assumes that locus names do NOT contain underscores, otherwise downstream parsing
-      (variant -> locus) would be ambiguous.
-    - Returns a flat list of strings representing all variants
-      (e.g., ["locus1_a1", "locus1_a2", ...]).
-    """
-
-    names: List[str] = []
-    for locus, alleles in locus_levels:
-        if "_" in locus:
-            raise ValueError(f"Locus name '{locus}' contains '_', which is not supported by the current variant naming scheme (locus_allele).")
-        for a in alleles:
-            names.append(f"{locus}_{a}")
-    return names
 
 def variant_to_locus(variant: str) -> str:
 
@@ -307,58 +302,55 @@ def chunk_list(items: List[str], block_size: int) -> List[List[str]]:
 def write_rtab_block_stream(cgmlst_df: pd.DataFrame, sample_col: str, block_variants: List[str], out_path: str, logger: logging.Logger) -> None:
 
     """
-    Write a block of cgMLST variants to an RTAB file for Pyseer (--pres).
+    Write an RTAB file for a block of variants in a faster way:
+    - group variants by locus
+    - convert each locus column to str once
+    - compute patterns with numpy vectorization
 
-    - Uses `sample_col` as sample ID (or the DataFrame index if missing).
-    - Parses each variant (e.g. "locus_allele") into (locus, allele).
-    - Checks that each locus exists in `cgmlst_df`.
-    - For every variant, encodes presence/absence across samples:
-      1 if sample's allele == target allele, else 0.
-    - Writes an RTAB table:
-      first column = variant name,
-      following columns = samples,
-      rows = binary vectors per variant.
-    - Streams directly to file for low memory usage and logs timing/size info.
+    RTAB format produced:
+      header: "variant<TAB>S1<TAB>S2..."
+      each row: "locus_allele<TAB>0/1<TAB>0/1..."
+
+    Parameters:
+    
+    - cgmlst_df : pd.DataFrame
+        - Table with sample column and loci columns (alleles).
+        - Often you pass cg.reset_index() so that sample_col exists as a column.
+    - sample_col : str
+        - Name of the sample column (e.g. "ceppoID").
+    - block_variants : List[str]
+        - Variants in "locus_allele" format.
+    - out_path : str
+        - Output path.
     """
 
-    t0 = time.perf_counter()
-    logger.info(f"[RTAB] write {len(block_variants)} variants → {out_path} | {mem_usage_str()}")
-    # Allinea in modo esplicito: indice = sample ID
-    if sample_col in cgmlst_df.columns:
-        df = cgmlst_df.set_index(sample_col).copy()
-    else:
-        df = cgmlst_df.copy()
-    df.index = df.index.astype(str)
-    # Pre-parse varianti in (locus, allele)
-    parsed: List[Tuple[str, str]] = []
+    if sample_col not in cgmlst_df.columns:
+        raise ValueError(f"Missing sample column '{sample_col}' in df")
+    samples = cgmlst_df[sample_col].astype(str).tolist()
+    # Group alleles by locus to avoid repeated per-variant column conversion
+    locus_to_alleles: Dict[str, List[str]] = {}
     for v in block_variants:
-        if "_" in v:
-            locus, allele = v.split("_", 1)
-        elif "=" in v:
-            locus, allele = v.split("=", 1)
-        else:
-            parts = re.split(r"[\|\:\-]", v, maxsplit=1)
-            locus, allele = parts[0], (parts[1] if len(parts) > 1 else "")
-        if locus not in df.columns:
-            raise KeyError(f"[RTAB] locus '{locus}' not found in cgMLST columns.")
-        parsed.append((locus, allele))
-    samples = df.index.tolist()
-    with open(out_path, "w") as f:
-        # Prima colonna = nome variante, poi tutti i ceppi
+        if "_" not in v:
+            continue
+        locus, allele = v.split("_", 1)
+        locus_to_alleles.setdefault(locus, []).append(allele)
+    # Write RTAB
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write("variant\t" + "\t".join(samples) + "\n")
-        for (locus, allele), vname in zip(parsed, block_variants):
-            col_vals = df[locus].astype(str).values
-            bits = ["1" if val == allele else "0" for val in col_vals]
-            f.write(vname + "\t" + "\t".join(bits) + "\n")
-    dt = time.perf_counter() - t0
-    try:
-        size_mb = os.path.getsize(out_path) / 1024 / 1024
-    except Exception:
-        size_mb = float("nan")
-    logger.info(
-        f"[RTAB] done variants={len(block_variants)} samples={len(df)} "
-        f"size={size_mb:.1f}MB in {dt:.2f}s | {mem_usage_str()}"
-    )
+        for locus, alleles in locus_to_alleles.items():
+            if locus not in cgmlst_df.columns:
+                continue
+            # Convert column once per locus
+            col_vals = cgmlst_df[locus].astype(str).to_numpy()
+            # For deterministic output, you may sort alleles
+            # alleles = sorted(set(alleles))
+            for allele in alleles:
+                pattern = (col_vals == allele)  # boolean array
+                # Convert boolean to 0/1 strings efficiently
+                bits = np.where(pattern, "1", "0")
+                f.write(f"{locus}_{allele}\t" + "\t".join(bits.tolist()) + "\n")
+    if logger is not None:
+        logger.info(f"[RTAB] wrote {out_path} | variants={len(block_variants)} samples={len(samples)}")
 
 def run_pyseer_block(pyseer_bin: str, phen_path: str, distances_square_path: str, mds_components: int, rtab_path: str, out_path: str,
                      cpu_per_block: int, logger: logging.Logger) -> None:
@@ -398,7 +390,7 @@ def run_pyseer_block(pyseer_bin: str, phen_path: str, distances_square_path: str
             size_mb = float("nan")
         logger.info(f"[BLOCK] pyseer OK in {dt:.2f}s out_size={size_mb:.1f}MB | {mem_usage_str()}")
 
-def filter_variants_by_pattern_threshold(cg: pd.DataFrame, block_variants: List[str], y_bin: pd.Series, min_case: int = 5, min_control: int = 5, logger=None) -> List[str]:
+def filter_variants_by_pattern_threshold(cg_str: pd.DataFrame, block_variants: List[str], y_bin: pd.Series, min_case: int = 5, min_control: int = 5, logger=None) -> List[str]:
 
     """
     Structural pre-GWAS filtering of block variants using case/control pattern thresholds.
@@ -448,13 +440,13 @@ def filter_variants_by_pattern_threshold(cg: pd.DataFrame, block_variants: List[
     """
 
     # Ensure alignment
-    y_bin = y_bin.loc[cg.index]
+    y_bin = y_bin.loc[cg_str.index]
     case_mask = (y_bin.values == 1)
     control_mask = (y_bin.values == 0)
     keep: List[str] = []
-    n = len(cg)
+    n = len(cg_str)
     # Use string representation to compare alleles robustly
-    cg_str = cg.astype(str)
+    #cg_str = cg.astype(str)
     cols = cg_str.columns
     for v in block_variants:
         if "_" not in v:
@@ -502,7 +494,8 @@ def run_ovr_gwas_for_class(label: str, y_bin: pd.Series, cg: pd.DataFrame, dista
     - Concatenates all blocks into a single DataFrame, drops NaN p-values,
       sorts by p-value, and returns the GWAS table for this class.
     """
-
+    
+    cg_str = cg.astype(str)
     # Log di base sulla classe
     n_pos = int(y_bin.sum())
     n_neg = len(y_bin) - n_pos
@@ -524,7 +517,7 @@ def run_ovr_gwas_for_class(label: str, y_bin: pd.Series, cg: pd.DataFrame, dista
         with ProcessPoolExecutor(max_workers=workers) as ex:
             for bi, block_variants in enumerate(blocks):
                 # 1) pattern-threshold per blocco 
-                filtered_block_variants = filter_variants_by_pattern_threshold(cg=cg, block_variants=block_variants, y_bin=y_bin, min_case=min_case_count,
+                filtered_block_variants = filter_variants_by_pattern_threshold(cg_str=cg_str, block_variants=block_variants, y_bin=y_bin, min_case=min_case_count,
                                                                                 min_control=min_control_count, logger=logger)
                 if not filtered_block_variants:
                     logger.info(f"[OVR:{label}] block {bi+1}/{n_blocks} skipped after pattern "
@@ -744,31 +737,9 @@ def main():
         D.to_csv(dist_aligned_path, sep="\t")
         logger.info(f"[DIST] aligned distance matrix written to {dist_aligned_path} | shape={D.shape}")
         del D
-        # 3) Enumerazione varianti da cgMLST
-        locus_levels = enumerate_variants_from_cgmlst(cg.reset_index(), "ceppoID")
-        all_variants = variants_to_strings(locus_levels)
-        logger.info(f"[ENUM] total_variants={len(all_variants)}")
-        del locus_levels
-        # 4) Filtro Minor Allele Frequency (MAF) -> filtro globale che guarda la frequenza di un allele in tutti i ceppi (pre-pyseer)
-        if args.maf is not None and args.maf > 0.0 and all_variants:
-            logger.info(f"[MAF] filtering with maf_min={args.maf}")
-            counts = np.zeros(len(all_variants), dtype=np.int64)
-            parsed = [(i, *v.split("_", 1)) if "_" in v else (i, v, "") for i, v in enumerate(all_variants)]
-            cols = list(cg.columns)
-            n = len(cg)
-            for r, row in enumerate(cg.itertuples(index=False), start=1):
-                row_vals = dict(zip(cols, map(str, row)))
-                for i, locus, allele in parsed:
-                    if allele and row_vals.get(locus, None) == allele:
-                        counts[i] += 1
-                del row_vals
-                if (r % 2000) == 0:
-                    logger.info(f"[MAF] progress {r}/{n} | {mem_usage_str()}")
-            freqs = counts.astype(np.float64) / float(n)
-            keep = (freqs >= args.maf) & (freqs <= (1.0 - args.maf))
-            all_variants = [v for v, k in zip(all_variants, keep) if k]
-            logger.info(f"[MAF] kept variants={len(all_variants)}")
-            del counts, parsed, cols, freqs, keep
+        # 3) Enumerazione varianti da cgMLST + filtro MAF globale
+        all_variants = maf_filter_variants_per_locus(cg=cg, maf=args.maf, logger=logger)
+        logger.info(f"[ENUM+MAF] total_variants_after_maf={len(all_variants)}")
         # 4b) Bonferroni threshold calculation
         if getattr(args, "use_patterns_bonferroni", False) and args.alpha_patterns is not None:
             bonf_p_thr = bonferroni_threshold_from_patterns(cg=cg, all_variants=all_variants, alpha=args.alpha_patterns, logger=logger)
