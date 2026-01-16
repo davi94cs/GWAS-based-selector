@@ -116,7 +116,7 @@ on cgMLST allelic data. The process is designed to be **statistically robust**, 
 1. Read and align **cgMLST** and **phenotypes** by sampleID.
 2. Read the **distance matrix**, symmetrize it, and reorder it to match
    the cgMLST sample order
-3. Enumerate cgMLST-derived variants and convert them to string identifiers  
+3. Apply an optional Minor Allele Frequency (MAF) filter. Enumerate cgMLST-derived variants and convert them to string identifiers  
 
    **Example:**
 
@@ -124,9 +124,9 @@ on cgMLST allelic data. The process is designed to be **statistically robust**, 
    locus L1, alleles {0, 1, 3}
    → variants: L1_0, L1_1, L1_3, ...
    ```
-
-4. Apply an optional Minor Allele Frequency (MAF) filter. Remove variants with very low or very high frequency (global, structure-based filter)
-5. Compute a pattern-based Bonferroni threshold
+   
+   Remove variants with very low or very high frequency (global, structure-based filter)
+4. Compute a pattern-based Bonferroni threshold
    - count unique presence/absence patterns
    - compute threshold as:
 
@@ -134,7 +134,7 @@ on cgMLST allelic data. The process is designed to be **statistically robust**, 
      p_threshold = α / (n_unique patterns)
      ```
 
-6. For each phenotype class (One-vs-Rest):
+5. For each phenotype class (One-vs-Rest):
    - build a binary phenotype vector
    - `y_bin = 1{phenotype == class}`
    - split all variants into blocks of size `block_size`
@@ -162,8 +162,8 @@ on cgMLST allelic data. The process is designed to be **statistically robust**, 
      - optional Top-K selection
      - retain the K loci with the highest significance  
        *(highest −log10(q_min))*
-7. Aggregate selected loci across classes  
-8. Save outputs
+6. Aggregate selected loci across classes  
+7. Save outputs
 
 
 ---
