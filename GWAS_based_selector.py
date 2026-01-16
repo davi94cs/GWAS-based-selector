@@ -223,17 +223,12 @@ def maf_filter_variants_per_locus(cg: pd.DataFrame, maf: Optional[float], logger
     Efficient MAF filter for allele-based variants (locus_allele) computed per locus.
 
     Parameters:
-    - cg : pd.DataFrame
-        - cgMLST/wgMLST table indexed by sample ID, with loci as columns.
-        - Values are alleles (int/str), possibly with missing values.
-    - maf : float or None
-        - MAF threshold in (0, 0.5]. If None or <= 0, no filtering is performed.
-    - logger : logger or None
-        - Optional logger.
+    - cg as cgMLST dataframe indexed by sample ID, with loci as columns.
+    - maf as MAF threshold in (0, 0.5]. If None or <= 0, no filtering is performed.
+    - logger (optional)
 
     Returns:
-    - List[str]
-        - List of variants "locus_allele" that pass maf <= freq <= (1 - maf).
+    - List of variants "locus_allele" that pass maf <= freq <= (1 - maf).
     """
 
     if maf is None or maf <= 0.0:
@@ -256,7 +251,7 @@ def maf_filter_variants_per_locus(cg: pd.DataFrame, maf: Optional[float], logger
         if s.empty:
             continue
         counts = s.value_counts(dropna=True)
-        freqs = counts / float(n)  # note: using total N (including missing) for consistency
+        freqs = counts / float(n)  
         # keep alleles with maf <= f <= 1-maf
         keep_alleles = freqs[(freqs >= maf) & (freqs <= (1.0 - maf))].index.tolist()
         out.extend([f"{locus}_{a}" for a in keep_alleles])
@@ -911,3 +906,4 @@ if __name__ == "__main__":
 
 
 # python3 GWAS/GWAS_based_selector.py GWAS/GWAS_INPUT/3k_subset_cgMLST_monoID.csv GWAS/GWAS_INPUT/3k_subset_phenotypes_monoID.csv GWAS/GWAS_INPUT/3k_distance_clean.tsv --out GWAS/GWAS_OUTPUT/dflt --log GWAS/GWAS_OUTPUT/dflt/log.txt --pyseer pyseer --id-col id --phen-col target_IZSAM --block-size 1000 --workers 3 --cpu 3 --mds 10 --maf 0.001 --use-patterns-bonferroni --alpha-patterns 0.001 --min-case-count 5 --min-control-count 5 --fdr 0.001 --multi union
+
