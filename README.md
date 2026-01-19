@@ -108,7 +108,7 @@ Pairwise genomic distance matrix used to model population structure.
 ## Process
 
 GWAS-based Selector implements a **population-aware, multiclass GWAS pipeline**
-on cgMLST allelic data. The process is designed to be **statistically robust**, **scalable**, and
+on cgMLST allelic data. The process is designed to be **flexible**, **scalable**, and
 **biologically interpretable**. The overview is shown in `GWAS-based-selector-arch.png` and in `GWAS-based-selector-wf.pdf` files.
 
 ### High-level workflow
@@ -116,7 +116,7 @@ on cgMLST allelic data. The process is designed to be **statistically robust**, 
 1. Read and align **cgMLST** and **phenotypes** by sampleID.
 2. Read the **distance matrix**, symmetrize it, and reorder it to match
    the cgMLST sample order
-3. Apply an optional Minor Allele Frequency (MAF) filter. Enumerate cgMLST-derived variants and convert them to string identifiers  
+3. Apply Minor Allele Count (MAC) *(phenotype-agnostic structural filter)*. Enumerate cgMLST-derived variants and convert them to string identifiers  
 
    **Example:**
 
@@ -126,20 +126,12 @@ on cgMLST allelic data. The process is designed to be **statistically robust**, 
    ```
    
    Remove variants with very low or very high frequency (global, structure-based filter)
-4. Compute a pattern-based Bonferroni threshold
-   - count unique presence/absence patterns
-   - compute threshold as:
-
-     ```text
-     p_threshold = α / (n_unique patterns)
-     ```
-
-5. For each phenotype class (One-vs-Rest):
+4. For each phenotype class (One-vs-Rest):
    - build a binary phenotype vector
    - `y_bin = 1{phenotype == class}`
    - split all variants into blocks of size `block_size`
    - for each block (parallel execution):
-     - remove variants that are:
+     - case/control study --> remove variants that are:
        - monomorphic
        - too rare in cases or controls
          *(phenotype-dependent structural filter)*
@@ -150,8 +142,16 @@ on cgMLST allelic data. The process is designed to be **statistically robust**, 
        - binary phenotype
        - aligned distance matrix
        - Multidimensional Scaling (MDS) components
+       - pyseer parameters
      - extract `(variant, p-value)` pairs
      - merge results across all blocks
+     - compute a pattern-based Bonferroni threshold (count_patterns script from pyseer)
+       - count unique presence/absence patterns
+       - compute threshold as:
+
+        ```text
+        p_threshold = α / (n_unique patterns)
+        ```
      - compute q-values using Benjamini–Hochberg FDR
      - apply a double statistical filter:
        - p-value ≤ Bonferroni threshold
@@ -159,12 +159,11 @@ on cgMLST allelic data. The process is designed to be **statistically robust**, 
      - map variants back to loci
      - aggregate variants at the locus level:
        - minimum q-value per locus (`q_min`)
-     - optional Top-K selection
+     - Top-K selection
      - retain the K loci with the highest significance  
        *(highest −log10(q_min))*
-6. Aggregate selected loci across classes  
-7. Save outputs
-
+5. Aggregate selected loci across classes  
+6. Save outputs
 
 ---
 
@@ -271,27 +270,8 @@ cd <repo_name>
 Example of usage pattern from cli:
 
 ```bash
-python3 GWAS_based_selector.py \
-  GWAS_INPUT/cgmlst.csv \
-  GWAS_INPUT/phenotypes.csv \
-  GWAS_INPUT/distance_matrix.tsv \
-  --out GWAS_OUTPUT/run_01 \
-  --log GWAS_OUTPUT/run_01/report.log \
-  --pyseer pyseer \
-  --id-col sample_id \
-  --phen-col phenotype_col \
-  --block-size 1000 \
-  --workers 3 \
-  --cpu 3 \
-  --mds 10 \
-  --maf 0.001 \
-  --use-patterns-bonferroni \
-  --alpha-patterns 0.001 \
-  --min-case-count 5 \
-  --min-control-count 5 \
-  --fdr 0.001 \
-  --k 50 \
-  --multi union
+python3 GWAS_based_selector.py GWAS_INPUT/cgMLST.csv GWAS_INPUT/phenotypes.csv GWAS_INPUT/distance_matrix.tsv --out GWAS_OUTPUT/top_25 --log GWAS_OUTPUT/top_25/log.txt --utils-dir utils --pyseer pyseer --id-col id --phen-col phenotype --block-size 2000 --workers 3 --cpu 3 --mds 10 --prefilter-mac 10 --max-locus-missing 0.05 --pyseer-min-af 0.002 --pyseer-filter-pvalue 1e-3 --pyseer-lrt-pvalue 1e-3 --pyseer-print-filtered --enable-case-control-filter --min-case-count 3 --min-control-count 3 --enable-pattern-bonferroni --alpha-patterns 0.05 --count-patterns count_patterns.py --enable-bh --bh-q 0.01 --topk 25 --multi union
+
 ```
 
 To deactivate the environment (after the tool usage):
