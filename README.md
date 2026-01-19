@@ -267,6 +267,8 @@ Activated the `gwas_env`, procede with:
 cd <repo_name>
 ```
 
+NOTE: BE SURE TO HAVE THE SCRIPT "count_patterns.py" (from pyseer repository) IN YOUR WORK REPOSITORY.
+
 Example of usage pattern from cli:
 
 ```bash
