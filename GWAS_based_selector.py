@@ -43,9 +43,9 @@ except Exception:
 
 def parse_args() -> argparse.Namespace:
     """
-    Parse command-line arguments for a pyseer-first cgMLST multiclass (OVR) GWAS wrapper.
+    Parse command-line arguments for a pyseer cgMLST multiclass (OVR) GWAS wrapper.
 
-    Design goals (enforced by defaults):
+    Design goals:
     1) Pyseer-first minimal default:
        - Running the tool with no optional flags performs only the preprocessing
          needed to run pyseer with *pyseer defaults* (no wrapper-side selection).
@@ -58,22 +58,11 @@ def parse_args() -> argparse.Namespace:
        - Stable output artifacts are always written under --out (default: selector_out).
 
     3) Flexibility:
-       - Users can change pyseer parameters either via typed flags (common ones)
+       - Users can change wrapper and pyseer parameters either via typed flags (common ones)
          or via a generic pass-through (--pyseer-extra).
 
-    Notes on biological correctness:
-    - Allele frequency and missingness filtering should be handled by pyseer
-      (e.g., --min-af/--max-missing). The wrapper must not implement its own
-      MAF filter in pyseer-first mode, to avoid discrepancies due to missing handling.
-    - Pattern-based Bonferroni (if enabled) uses pyseer native pattern hashing
-      (--output-patterns) and the official count_patterns.py utility.
-    - RTAB (--pres) must be strictly binary in pyseer; missing cgMLST calls are
-      encoded as 0. To mitigate bias, an optional locus-level missingness QC
-      can be enabled via --max-locus-missing.
 
-    Returns
-    -------
-    argparse.Namespace
+    Returns --> argparse.Namespace
         Parsed arguments.
     """
     ap = argparse.ArgumentParser(description="Pyseer-first multiclass (OVR) GWAS on cgMLST using a square distance matrix.")
@@ -92,12 +81,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--mds", type=int, default=15,
                     help="Number of MDS dimensions for population structure correction "
                          "(passed to pyseer as --max-dimensions)")
-    # Output paths (stable artifacts)
+    # Output paths 
     ap.add_argument("--out", default="selector_out",
                     help="Output folder for final artifacts. The tool will always write: "
                          "log.txt, results.txt, filtered_loci.csv, loci.obj in this folder.")
     ap.add_argument("--log", default=None, help="Log file path. If not set, defaults to <out>/log.txt")
-    # Intermediate files (minimal policy: keep only patterns + errors when needed)
+    # Intermediate files 
     ap.add_argument("--utils-dir", default=os.path.join("GWAS", "utils"),
                     help="Directory for minimal intermediate files generated during the run. "
                          "In this pipeline we keep only: pattern files (if enabled) and error diagnostics (if failures). "
@@ -105,11 +94,11 @@ def parse_args() -> argparse.Namespace:
     # Input column naming
     ap.add_argument("--id-col", default="id", help="Sample ID column name in both cgMLST and phenotype files")
     ap.add_argument("--phen-col", default="target_IZSAM", help="Phenotype column name in the phenotype file")
-    # Optional QC: locus-level missingness filter (OFF by default)
+    # Locus-level missingness filter (OFF by default)
     ap.add_argument("--max-locus-missing", type=float, default=None,
                     help="Optional QC (OFF by default): drop loci with missingness fraction > this threshold BEFORE RTAB generation. "
                     "Useful because RTAB (--pres) must be binary and missing calls are encoded as 0. Example: 0.05")
-    # Wrapper-side optional QC / selection (OFF by default)
+    # Wrapper-side optional selection (OFF by default)
     ap.add_argument("--prefilter-mac", type=int, default=None,
                     help="Optional wrapper-side prefilter (OFF by default): keep only allele-specific variants "
                     "with MAC >= this value and <= N-MAC (symmetrical), computed from cgMLST calls. "
@@ -197,9 +186,9 @@ def mem_usage_str() -> str:
     - Computes the total RSS memory used by all child processes.
     - Defines a helper `fmt()` function to convert bytes into megabytes.
     - Returns a formatted string showing:
-        * rss: memory used by the main process
-        * children_rss: total memory used by all child processes
-        * n_children: number of child processes
+        * rss: memory currently used by the wrapper (memory used by data structures loaded during wrapper execution)
+        * children_rss: total memory used by all pyseer processes (children_rss = n_children x RAM_by_pyseer)
+        * n_children: number of pyseer processes in running
     """
 
     if not _HAS_PSUTIL:
@@ -231,19 +220,6 @@ def setup_logger(log_path: str, level_console: int = logging.INFO, level_file: i
       to duplicated log lines or logs being written to an unintended previous file.
     - Stable, always-present logs are part of the required artifacts (log.txt).
 
-    Parameters
-    ----------
-    log_path : str
-        Path to the log file to create/overwrite.
-    level_console : int
-        Logging level for console output (stdout).
-    level_file : int
-        Logging level for file output.
-
-    Returns
-    -------
-    logging.Logger
-        Configured logger instance.
     """
     os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
     logger = logging.getLogger("GWAS_selector")
@@ -371,30 +347,6 @@ def enumerate_variants_per_locus(cg: pd.DataFrame, logger: Optional[logging.Logg
     2) For each locus, collect unique, non-missing allele values.
     3) Emit one variant identifier per observed allele as "locus_allele".
 
-    Why:
-    - In a pyseer-first workflow, allele frequency and missingness filtering must be
-      delegated to pyseer (e.g., --min-af, --max-missing), because pyseer computes
-      these quantities on the exact input matrix it tests (RTAB) and with its own
-      missingness semantics.
-    - The wrapper only needs a deterministic list of candidate variants to build
-      RTAB blocks; it should not impose a frequency filter outside pyseer by default.
-
-    Performance notes:
-    - Works locus-by-locus, avoiding construction of large intermediate matrices.
-    - Uses pandas unique() per locus, which is efficient for cgMLST-sized tables.
-
-    Parameters
-    ----------
-    cg : pd.DataFrame
-        cgMLST table indexed by sample ID, with loci as columns and alleles as values.
-        Missing alleles must be represented as NaN.
-    logger : logging.Logger or None
-        Optional logger for summary stats.
-
-    Returns
-    -------
-    List[str]
-        List of unique observed "locus_allele" identifiers.
     """
     out: List[str] = []
     for locus in cg.columns:
@@ -450,20 +402,6 @@ def prefilter_variants_by_mac_per_locus(cg: pd.DataFrame, mac: int, logger: Opti
       This is consistent with RTAB encoding where a missing call cannot contribute
       to allele presence and is effectively treated as absence.
 
-    Parameters
-    ----------
-    cg : pd.DataFrame
-        cgMLST table indexed by sample ID, loci as columns, categorical alleles as values.
-        Missing values must be NaN.
-    mac : int
-        Minor allele count threshold (symmetric).
-    logger : logging.Logger or None
-        Optional logger.
-
-    Returns
-    -------
-    List[str]
-        List of "locus_allele" variants passing the MAC criterion.
     """
     if mac <= 0:
         raise ValueError("mac must be a positive integer.")
@@ -499,9 +437,6 @@ def filter_loci_by_missingness(cg: pd.DataFrame, max_locus_missing: float, logge
     - RTAB (--pres) must be binary, so missing cgMLST calls are encoded as 0.
       Filtering loci with high missingness mitigates missingness-driven artifacts.
 
-    Returns
-    -------
-    (filtered_cg, dropped_loci)
     """
     if not (0.0 <= max_locus_missing < 1.0):
         raise ValueError("max_locus_missing must be in [0, 1).")
@@ -542,18 +477,6 @@ def write_rtab_block_stream(cgmlst_df: pd.DataFrame, sample_col: str, block_vari
     3) For each locus/allele, compute NA-safe allele presence (missing -> False) and write:
        - "1" if present, "0" otherwise.
 
-    Parameters
-    ----------
-    cgmlst_df : pd.DataFrame
-        DataFrame containing `sample_col` and loci columns. Missing calls must be NaN.
-    sample_col : str
-        Sample ID column name.
-    block_variants : List[str]
-        Variants in "locus_allele" format.
-    out_path : str
-        Output RTAB file path.
-    logger : logging.Logger
-        Logger instance.
     """
     if sample_col not in cgmlst_df.columns:
         raise ValueError(f"Missing sample column '{sample_col}' in cgMLST dataframe")
@@ -597,12 +520,6 @@ def run_pyseer_block(pyseer_bin: str, phen_path: str, distances_square_path: str
         --output-patterns <patterns_out_path>
       This should be used only when pattern-based Bonferroni is enabled.
 
-    Parameters
-    ----------
-    patterns_out_path : Optional[str]
-        If provided, enables pyseer native pattern hashing output for this block.
-    utils_error_dir : Optional[str]
-        If provided, stores cmd/stderr files on failure only.
     """
     cmd = [
         pyseer_bin,
@@ -654,7 +571,8 @@ def run_pyseer_block(pyseer_bin: str, phen_path: str, distances_square_path: str
 def filter_variants_by_pattern_threshold(cg: pd.DataFrame, block_variants: List[str], y_bin: pd.Series, min_case: int = 5, min_control: int = 5,
                                          logger: Optional[logging.Logger] = None) -> List[str]:
     """
-    Optional phenotype-dependent QC filter for allele-specific variants.
+    Optional phenotype-dependent filter for allele-specific variants: 
+    it is structural pre-GWAS filtering of block variants using case/control pattern thresholds.
 
     Step-by-step:
     1) Align y_bin to cg index.
@@ -665,22 +583,48 @@ def filter_variants_by_pattern_threshold(cg: pd.DataFrame, block_variants: List[
          in either group (min_case/min_control)
     3) Return kept variants.
 
-    Why:
-    - This filter is NOT part of pyseer and must be OFF by default in pyseer-first
-      runs. When enabled, it acts as a guardrail against variants that provide
-      essentially no within-group information and can cause unstable estimates
-      (e.g., near-complete separation).
-    - Missing cgMLST calls are excluded from carrier counts, preventing technical
-      missingness from being interpreted as allele absence.
+    This function implements a PLINK-like QC step at the per-variant level:
+    for each allele-specific variant (locus_allele), it examines the
+    presence/absence pattern across samples and removes patterns that cannot
+    support a stable or meaningful association test.
 
-    Notes:
-    - If you want strict pyseer equivalence, do not enable this filter; use pyseer
-      frequency filters (e.g., --min-af) instead.
+    For each variant v (e.g. "locusA_3") we compute:
+      - pattern: 0/1 presence across samples
+      - case_count:  number of case samples (y_bin == 1) that carry the allele
+      - control_count: number of control samples (y_bin == 0) that carry the allele
 
-    Returns
-    -------
-    List[str]
-        Variants that pass the QC thresholds.
+    A variant is discarded if:
+      - it is monomorphic (pattern all 0 or all 1), or
+      - case_count < min_case, or
+      - control_count < min_control.
+
+    In particular:
+      - If pattern == y_bin (allele only in cases, never in controls),
+        then control_count = 0 and the variant is removed.
+      - If pattern is the exact opposite of y_bin (allele only in controls),
+        then case_count = 0 and the variant is removed.
+      - Only variants with mixed presence (some cases and some controls carrying
+        the allele) and sufficient counts in both groups are retained.
+
+    Biological rationale:
+  
+    A variant is biologically informative only if it shows variation within both
+    cases and controls. If all cases carry the allele and no controls do (or
+    vice versa), the signal is typically driven by shared ancestry / clonal
+    expansion rather than a true phenotype effect. This is the same motivation
+    behind standard GWAS QC in tools like PLINK, where monomorphic variants,
+    variants with very low minor allele counts, or variants present only in one
+    phenotype group are removed before association testing.
+
+    Statistical rationale:
+    
+    Variants present exclusively in cases or exclusively in controls cause
+    complete or quasi-complete separation in logistic/LMM models, leading to
+    unstable or infinite effect estimates and unreliable p-values. Requiring
+    minimum counts in both groups (min_case, min_control) ensures that the
+    regression has enough within-group variance to estimate an effect, improving
+    the stability and power of downstream Pyseer runs.
+
     """
     y_bin = y_bin.loc[cg.index]
     case_mask = (y_bin.values == 1)
@@ -735,10 +679,7 @@ def run_ovr_gwas_for_class(label: str, y_bin: pd.Series, cg: pd.DataFrame, dista
     - If enable_pattern_bonferroni=True, each block is run with pyseer --output-patterns
       (temp file), then all per-block pattern files are concatenated into a single
       shell-safe file under <utils_run_dir>/patterns/OVR_<safe_label>_patterns_all.txt.
-
-    Returns
-    -------
-    (gwas_df, patterns_all_path)
+      
     """
     label_fs = safe_label(label)
     n_pos = int(y_bin.sum())
@@ -871,15 +812,6 @@ def bh_fdr(pvals: np.ndarray) -> np.ndarray:
     - BH controls the expected false discovery rate under standard assumptions and
       is commonly used in microbial GWAS post-processing to obtain q-values.
 
-    Parameters
-    ----------
-    pvals : np.ndarray
-        1D array-like of raw p-values.
-
-    Returns
-    -------
-    np.ndarray
-        Array of q-values with the same shape as input. Non-finite p-values yield NaN q-values.
     """
     p = np.asarray(pvals, dtype=float)
     if p.ndim != 1:
@@ -916,25 +848,6 @@ def run_count_patterns(count_patterns_path: str, patterns_all_path: str, alpha: 
     Saves stdout/stderr to out_dir (small, useful, reproducible). If `tag` is provided,
     outputs are saved as count_patterns_<tag>.stdout.txt / .stderr.txt to avoid overwrites.
 
-    Parameters
-    ----------
-    count_patterns_path : str
-        Path to count_patterns.py.
-    patterns_all_path : str
-        Path to concatenated patterns file for a class.
-    alpha : float
-        Family-wise alpha.
-    out_dir : str
-        Directory where stdout/stderr logs will be saved.
-    logger : logging.Logger
-        Logger instance.
-    tag : Optional[str]
-        Optional label used to disambiguate outputs per class (should be filesystem-safe).
-
-    Returns
-    -------
-    Optional[float]
-        Parsed p-value threshold, or None if not definable.
     """
     if not (0.0 < alpha <= 1.0):
         raise ValueError("alpha must be in (0, 1].")
@@ -1399,6 +1312,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
 
