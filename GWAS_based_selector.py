@@ -15,6 +15,7 @@ Output generated:
 
 """
 
+import threading  # Standard library for threading support: Thread, Lock, Event, Condition, Semaphore
 import os  # Standard library for interacting with the operating system: paths, environment variables, file/directory ops, process info
 import shlex # Shell utilities: safely split/join command-line strings, escape arguments for shell
 import re  # Regular expressions: searching, matching, and replacing text with patterns
@@ -26,7 +27,7 @@ import pickle  # Serialize/deserialize Python objects to/from byte streams (for 
 import logging  # Configurable logging framework (levels, handlers, formatting) for structured runtime messages
 import tempfile  # Create secure temporary files/directories that auto-clean when closed
 import subprocess  # Spawn and manage external processes/commands; capture their output/return codes
-from typing import List, Tuple, Dict, Optional  # Type hints for readability and static analysis: annotate list/tuple/dict types
+from typing import List, Tuple, Dict, Optional, Literal  # Type hints for readability and static analysis: annotate list/tuple/dict types
 import numpy as np  # Core numerical array library: vectorized computation, linear algebra, random numbers
 import pandas as pd  # Data analysis library: DataFrame/Series for tabular data, CSV/TSV I/O, grouping, joins
 from concurrent.futures import ProcessPoolExecutor, as_completed  # High-level multiprocessing: run functions in parallel across processes; as_completed iterates results as workers finish
@@ -39,13 +40,15 @@ try:  # Tries to import psutil (CPU/RAM usage monitoring). Sets _HAS_PSUTIL flag
 except Exception:
     _HAS_PSUTIL = False
 
+MissingMode = Literal["drop", "category"]
+
 ### CLI ###
 
 def parse_args() -> argparse.Namespace:
     """
-    Parse command-line arguments for a pyseer cgMLST multiclass (OVR) GWAS wrapper.
+    Parse command-line arguments for a pyseer-first cgMLST multiclass (OVR) GWAS wrapper.
 
-    Design goals:
+    Design goals (enforced by defaults):
     1) Pyseer-first minimal default:
        - Running the tool with no optional flags performs only the preprocessing
          needed to run pyseer with *pyseer defaults* (no wrapper-side selection).
@@ -58,14 +61,29 @@ def parse_args() -> argparse.Namespace:
        - Stable output artifacts are always written under --out (default: selector_out).
 
     3) Flexibility:
-       - Users can change wrapper and pyseer parameters either via typed flags (common ones)
+       - Users can change pyseer parameters either via typed flags (common ones)
          or via a generic pass-through (--pyseer-extra).
 
+    Notes on biological correctness:
+    - Allele frequency and missingness filtering should be handled by pyseer
+      (e.g., --min-af/--max-missing). The wrapper must not implement its own
+      MAF filter in pyseer-first mode, to avoid discrepancies due to missing handling.
+    - Pattern-based Bonferroni (if enabled) uses pyseer native pattern hashing
+      (--output-patterns) and the official count_patterns.py utility.
+    - RTAB (--pres) must be strictly binary in pyseer; missing cgMLST calls are
+      encoded as 0. To mitigate bias, an optional locus-level missingness QC
+      can be enabled via --max-locus-missing.
 
-    Returns --> argparse.Namespace
+    Returns
+    -------
+    argparse.Namespace
         Parsed arguments.
     """
     ap = argparse.ArgumentParser(description="Pyseer-first multiclass (OVR) GWAS on cgMLST using a square distance matrix.")
+    # Future-proof flags (NOT implemented yet, just accepted)
+    ap.add_argument("--mut-type", default="cgmlst", help="Mutation type (future). Currently supported: cgmlst, wgmlst.")
+    ap.add_argument("--task", choices=["classification", "regression"], default="classification", help="Task type (future). Currently only classification is implemented.")
+    ap.add_argument("--feature-type", choices=["categorical", "numeric"], default="categorical", help="Feature type (future). Currently only categorical alleles are implemented.")
     # Positional inputs
     ap.add_argument("cgmlst_csv", help="cgMLST table (sampleID + loci categorical/allelic values)")
     ap.add_argument("phen_csv", help="Phenotypes table (sampleID + phenotype category)")
@@ -81,12 +99,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--mds", type=int, default=15,
                     help="Number of MDS dimensions for population structure correction "
                          "(passed to pyseer as --max-dimensions)")
-    # Output paths 
+    # Output paths (stable artifacts)
     ap.add_argument("--out", default="selector_out",
                     help="Output folder for final artifacts. The tool will always write: "
                          "log.txt, results.txt, filtered_loci.csv, loci.obj in this folder.")
     ap.add_argument("--log", default=None, help="Log file path. If not set, defaults to <out>/log.txt")
-    # Intermediate files 
+    # Intermediate files (minimal policy: keep only patterns + errors when needed)
     ap.add_argument("--utils-dir", default=os.path.join("GWAS", "utils"),
                     help="Directory for minimal intermediate files generated during the run. "
                          "In this pipeline we keep only: pattern files (if enabled) and error diagnostics (if failures). "
@@ -94,11 +112,18 @@ def parse_args() -> argparse.Namespace:
     # Input column naming
     ap.add_argument("--id-col", default="id", help="Sample ID column name in both cgMLST and phenotype files")
     ap.add_argument("--phen-col", default="target_IZSAM", help="Phenotype column name in the phenotype file")
-    # Locus-level missingness filter (OFF by default)
+    # Missingness handling in cgMLST
+    ap.add_argument("--missing-mode", choices=["drop", "category"], default="drop", help="How to handle missing allele calls (NaN). "
+                    "'drop': keep NaN (treated as absence in RTAB). "
+                    "'category': replace NaN with a dedicated allele token.")
+    ap.add_argument("--missing-token", default="__MISSING__", help="Allele token used when --missing-mode=category.")
+    ap.add_argument("--include-missing-allele", action="store_true", help="If set, allow the missing token (e.g. __MISSING__) to be treated as a real allele and "
+                    "thus become a testable variant. By default, missing token is excluded from variants.")
+    # Optional QC: locus-level missingness filter (OFF by default)
     ap.add_argument("--max-locus-missing", type=float, default=None,
                     help="Optional QC (OFF by default): drop loci with missingness fraction > this threshold BEFORE RTAB generation. "
                     "Useful because RTAB (--pres) must be binary and missing calls are encoded as 0. Example: 0.05")
-    # Wrapper-side optional selection (OFF by default)
+    # Wrapper-side optional QC / selection (OFF by default)
     ap.add_argument("--prefilter-mac", type=int, default=None,
                     help="Optional wrapper-side prefilter (OFF by default): keep only allele-specific variants "
                     "with MAC >= this value and <= N-MAC (symmetrical), computed from cgMLST calls. "
@@ -186,9 +211,9 @@ def mem_usage_str() -> str:
     - Computes the total RSS memory used by all child processes.
     - Defines a helper `fmt()` function to convert bytes into megabytes.
     - Returns a formatted string showing:
-        * rss: memory currently used by the wrapper (memory used by data structures loaded during wrapper execution)
-        * children_rss: total memory used by all pyseer processes (children_rss = n_children x RAM_by_pyseer)
-        * n_children: number of pyseer processes in running
+        * rss: memory used by the main process
+        * children_rss: total memory used by all child processes
+        * n_children: number of child processes
     """
 
     if not _HAS_PSUTIL:
@@ -220,6 +245,19 @@ def setup_logger(log_path: str, level_console: int = logging.INFO, level_file: i
       to duplicated log lines or logs being written to an unintended previous file.
     - Stable, always-present logs are part of the required artifacts (log.txt).
 
+    Parameters
+    ----------
+    log_path : str
+        Path to the log file to create/overwrite.
+    level_console : int
+        Logging level for console output (stdout).
+    level_file : int
+        Logging level for file output.
+
+    Returns
+    -------
+    logging.Logger
+        Configured logger instance.
     """
     os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
     logger = logging.getLogger("GWAS_selector")
@@ -243,6 +281,73 @@ def setup_logger(log_path: str, level_console: int = logging.INFO, level_file: i
     logger.addHandler(fh)
     logger.addHandler(ch)
     return logger
+
+class ResourceMonitor:
+    """
+    Periodically samples RSS and CPU usage for the main process and its children.
+    Stores time series and provides mean/max summaries.
+    """
+    def __init__(self, interval_sec: float = 1.0):
+        self.interval_sec = float(interval_sec)
+        self._stop_evt = threading.Event()
+        self._thr: Optional[threading.Thread] = None
+        self.rss_total_mb: List[float] = []
+        self.cpu_total_pct: List[float] = []
+
+    def start(self) -> None:
+        if not _HAS_PSUTIL:
+            return
+        self._stop_evt.clear()
+        self._thr = threading.Thread(target=self._run, daemon=True)
+        self._thr.start()
+
+    def stop(self) -> None:
+        if not _HAS_PSUTIL:
+            return
+        self._stop_evt.set()
+        if self._thr is not None:
+            self._thr.join(timeout=2.0)
+
+    def summary(self) -> Dict[str, Optional[float]]:
+        if (not _HAS_PSUTIL) or (len(self.rss_total_mb) == 0):
+            return {"rss_mean_mb": None, "rss_max_mb": None, "cpu_mean_pct": None, "cpu_max_pct": None, "n_samples": 0, "interval_sec": self.interval_sec}
+        return {"rss_mean_mb": float(np.mean(self.rss_total_mb)), "rss_max_mb": float(np.max(self.rss_total_mb)),
+                "cpu_mean_pct": float(np.mean(self.cpu_total_pct)) if self.cpu_total_pct else None,
+                "cpu_max_pct": float(np.max(self.cpu_total_pct)) if self.cpu_total_pct else None,
+                "n_samples": int(len(self.rss_total_mb)), "interval_sec": self.interval_sec}
+
+    def _run(self) -> None:
+        proc = psutil.Process(os.getpid())
+        # Prime cpu_percent counters (first call is meaningless otherwise)
+        try:
+            proc.cpu_percent(interval=None)
+            for c in proc.children(recursive=True):
+                c.cpu_percent(interval=None)
+        except Exception:
+            pass
+        while not self._stop_evt.is_set():
+            try:
+                procs = [proc] + proc.children(recursive=True)
+                # RSS (bytes → MB)
+                rss_bytes = 0
+                for p in procs:
+                    try:
+                        rss_bytes += p.memory_info().rss
+                    except Exception:
+                        pass
+                self.rss_total_mb.append(rss_bytes / 1024 / 1024)
+                # CPU% (sum of processes)
+                cpu_pct = 0.0
+                for p in procs:
+                    try:
+                        cpu_pct += p.cpu_percent(interval=None)
+                    except Exception:
+                        pass
+                self.cpu_total_pct.append(cpu_pct)
+            except Exception:
+                # Don't fail the pipeline because of monitoring
+                pass
+            self._stop_evt.wait(self.interval_sec)
 
 ### DATA SYNC ---> DISTANCE MATRIX COHERENCE ###
 
@@ -338,7 +443,7 @@ def safe_label(s: str) -> str:
     s = re.sub(r"_+", "_", s)
     return s or "NA"
 
-def enumerate_variants_per_locus(cg: pd.DataFrame, logger: Optional[logging.Logger] = None) -> List[str]:
+def enumerate_variants_per_locus(cg: pd.DataFrame, logger: Optional[logging.Logger] = None, include_missing_allele: bool = False, missing_token: str = "__MISSING__") -> List[str]:
     """
     Enumerate all observed allele-specific cgMLST variants in "locus_allele" format.
 
@@ -347,19 +452,42 @@ def enumerate_variants_per_locus(cg: pd.DataFrame, logger: Optional[logging.Logg
     2) For each locus, collect unique, non-missing allele values.
     3) Emit one variant identifier per observed allele as "locus_allele".
 
+    Why:
+    - In a pyseer-first workflow, allele frequency and missingness filtering must be
+      delegated to pyseer (e.g. --min-af, --max-missing), because pyseer computes
+      these quantities on the exact input matrix it tests (RTAB) and with its own
+      missingness semantics.
+    - The wrapper only needs a deterministic list of candidate variants to build
+      RTAB blocks. It should not impose a frequency filter outside pyseer by default.
+
+    Performance notes:
+    - Works locus-by-locus, avoiding construction of large intermediate matrices.
+    - Uses pandas unique() per locus, which is efficient for cgMLST-sized tables.
+
+    NaN management:
+    - If cg contains NaN (missing_mode=drop), NaNs are excluded via dropna().
+    - If missing_mode=category was applied earlier, NaNs no longer exist and the token
+      may appear. The token is included only if include_missing_allele=True.
+
+
+    Returns list (List[str]) of unique observed "locus_allele" identifiers.
     """
+
     out: List[str] = []
+    total_alleles = 0
     for locus in cg.columns:
         s = cg[locus]
         if s is None:
             continue
-        alleles = s.dropna().astype(str).unique()
-        # Deterministic order improves reproducibility (optional but recommended)
-        # Sort only within-locus to keep memory low.
-        for a in sorted(alleles.tolist()):
+        alleles = s.dropna().astype("string").unique()
+        total_alleles += len(alleles)
+        for a in alleles:
+            if should_skip_allele(a, include_missing_allele, missing_token):
+                continue
             out.append(f"{locus}_{a}")
     if logger is not None:
-        logger.info(f"[ENUM] loci={cg.shape[1]} | variants_enumerated={len(out)}")
+        logger.info(f"[ENUM] loci={cg.shape[1]} | alleles_observed={total_alleles} | variants={len(out)} "
+                    f"| include_missing_allele={include_missing_allele}")
     return out
 
 def variant_to_locus(variant: str) -> str:
@@ -384,7 +512,49 @@ def variant_to_locus(variant: str) -> str:
 
 ### GWAS MAKER ---> UTILS, RTAB CONSTRUCTION, PYSEER RUNNING (FOR EACH CLASS) ###
 
-def prefilter_variants_by_mac_per_locus(cg: pd.DataFrame, mac: int, logger: Optional[logging.Logger] = None) -> List[str]:
+def normalize_cgmlst_missing(cg: pd.DataFrame, missing_mode: MissingMode = "drop", missing_token: str = "__MISSING__", logger: Optional[logging.Logger] = None) -> pd.DataFrame:
+
+    """
+    Normalize missing allele calls (NaN) in cgMLST/wgMLST.
+
+    - missing_mode="drop":
+        keep NaN as NaN. Missing values will never become a variant.
+    - missing_mode="category":
+        replace NaN with a special allele token (e.g. "__MISSING__"), enabling
+        the possibility to model missingness as an allele category (if allowed downstream).
+
+    This function should be called ONCE in main(), after sample alignment and
+    (optionally) locus missingness filtering.
+
+    Returns normalized allelic table (pd.DataFrame).
+    """
+
+    if missing_mode not in ("drop", "category"):
+        raise ValueError("missing_mode must be 'drop' or 'category'.")
+    if missing_mode == "drop":
+        if logger:
+            logger.info("[MISSING] mode=drop (NaN stays NaN).")
+        return cg
+    # category mode
+    out = cg.copy()
+    out = out.where(~out.isna(), other=missing_token)
+    if logger:
+        # global missing rate before replacement
+        miss_rate = float(cg.isna().mean().mean()) if cg.size else 0.0
+        logger.info(f"[MISSING] mode=category token={missing_token} | global_missing_rate={miss_rate:.4f}")
+    return out
+
+def should_skip_allele(allele: str, include_missing_allele: bool, missing_token: str) -> bool:
+
+    """
+    Returns True if the allele should be excluded from variant enumeration/testing.
+    """
+
+    if (not include_missing_allele) and (allele == missing_token):
+        return True
+    return False
+
+def prefilter_variants_by_mac_per_locus(cg: pd.DataFrame, mac: int, logger: Optional[logging.Logger] = None, include_missing_allele: bool = False, missing_token: str = "__MISSING__") -> List[str]:
     """
     Enumerate allele-specific variants (locus_allele) and apply a symmetric MAC prefilter.
 
@@ -398,11 +568,13 @@ def prefilter_variants_by_mac_per_locus(cg: pd.DataFrame, mac: int, logger: Opti
     - when enabled, reduces RTAB size and pyseer parsing/testing overhead
 
     Missingness handling:
-    - Missing cgMLST calls (NaN) are excluded from allele counts (dropna).
-      This is consistent with RTAB encoding where a missing call cannot contribute
-      to allele presence and is effectively treated as absence.
+    - If missing_mode=drop: NaNs are excluded from counting via dropna().
+    - If missing_mode=category: missing_token is counted like an allele, but is excluded
+      unless include_missing_allele=True.
 
+    Returns list (List[str]) of "locus_allele" variants passing the MAC criterion.
     """
+
     if mac <= 0:
         raise ValueError("mac must be a positive integer.")
     n = int(cg.shape[0])
@@ -417,16 +589,19 @@ def prefilter_variants_by_mac_per_locus(cg: pd.DataFrame, mac: int, logger: Opti
         s = cg[locus].dropna()
         if s.empty:
             continue
-        counts = s.astype(str).value_counts()
+        counts = s.astype("string").value_counts()
         total_alleles_observed += int(counts.shape[0])
+        # optionally remove missing token
+        if not include_missing_allele and (missing_token in counts.index):
+            counts = counts.drop(index=missing_token)
         keep = counts[(counts >= mac) & (counts <= (n - mac))].index.tolist()
         total_variants_kept += len(keep)
         for a in sorted(keep):
             out.append(f"{locus}_{a}")
     if logger is not None:
-        logger.info(
-            f"[PREFILTER_MAC] mac={mac} | N={n} | loci={cg.shape[1]} | "
-            f"alleles_observed={total_alleles_observed} | variants_kept={len(out)}")
+        logger.info(f"[PREFILTER_MAC] mac={mac} | N={n} | loci={cg.shape[1]} | "
+                    f"alleles_observed={total_alleles_observed} | variants_kept={len(out)} | "
+                    f"include_missing_allele={include_missing_allele}")
     return out
 
 def filter_loci_by_missingness(cg: pd.DataFrame, max_locus_missing: float, logger: Optional[logging.Logger] = None) -> Tuple[pd.DataFrame, List[str]]:
@@ -437,6 +612,9 @@ def filter_loci_by_missingness(cg: pd.DataFrame, max_locus_missing: float, logge
     - RTAB (--pres) must be binary, so missing cgMLST calls are encoded as 0.
       Filtering loci with high missingness mitigates missingness-driven artifacts.
 
+    Returns
+    -------
+    (filtered_cg, dropped_loci)
     """
     if not (0.0 <= max_locus_missing < 1.0):
         raise ValueError("max_locus_missing must be in [0, 1).")
@@ -464,7 +642,7 @@ def chunk_list(items: List[str], block_size: int) -> List[List[str]]:
 
 def write_rtab_block_stream(cgmlst_df: pd.DataFrame, sample_col: str, block_variants: List[str], out_path: str, logger: logging.Logger) -> None:
     """
-    Write a pyseer-compatible RTAB presence/absence matrix for a block of allele-specific variants.
+    Write a pyseer-compatible RTAB presence/absence matrix (variants x samples) for a block of allele-specific variants.
 
     Pyseer constraint (RTAB via --pres):
     - The RTAB matrix must be strictly binary (0/1). Missing tokens (e.g. empty, NA)
@@ -477,7 +655,12 @@ def write_rtab_block_stream(cgmlst_df: pd.DataFrame, sample_col: str, block_vari
     3) For each locus/allele, compute NA-safe allele presence (missing -> False) and write:
        - "1" if present, "0" otherwise.
 
+    Important:
+    - cgmlst_df must already contain allele values as strings (pre-converted once).
+    - Output RTAB is binary (0/1). Encoding missingness as an allele category
+      (e.g. '__MISSING__') is supported upstream. RTAB remains binary.
     """
+
     if sample_col not in cgmlst_df.columns:
         raise ValueError(f"Missing sample column '{sample_col}' in cgMLST dataframe")
     samples = cgmlst_df[sample_col].astype(str).tolist()
@@ -520,6 +703,12 @@ def run_pyseer_block(pyseer_bin: str, phen_path: str, distances_square_path: str
         --output-patterns <patterns_out_path>
       This should be used only when pattern-based Bonferroni is enabled.
 
+    Parameters
+    ----------
+    patterns_out_path : Optional[str]
+        If provided, enables pyseer native pattern hashing output for this block.
+    utils_error_dir : Optional[str]
+        If provided, stores cmd/stderr files on failure only.
     """
     cmd = [
         pyseer_bin,
@@ -568,11 +757,11 @@ def run_pyseer_block(pyseer_bin: str, phen_path: str, distances_square_path: str
         size_mb = float("nan")
     logger.info(f"[BLOCK] pyseer OK in {dt:.2f}s out_size={size_mb:.1f}MB | {mem_usage_str()}")
 
-def filter_variants_by_pattern_threshold(cg: pd.DataFrame, block_variants: List[str], y_bin: pd.Series, min_case: int = 5, min_control: int = 5,
-                                         logger: Optional[logging.Logger] = None) -> List[str]:
+def filter_variants_by_pattern_threshold(cg: pd.DataFrame, block_variants: List[str], y_bin: pd.Series, min_case: int = 1, min_control: int = 1,
+                                         logger: Optional[logging.Logger] = None, include_missing_allele: bool = False, missing_token: str = "__MISSING__") -> List[str]:
     """
-    Optional phenotype-dependent filter for allele-specific variants: 
-    it is structural pre-GWAS filtering of block variants using case/control pattern thresholds.
+    Optional phenotype-dependent QC filter for allele-specific variants:
+    It is structural pre-GWAS filtering of block variants using case/control pattern thresholds.
 
     Step-by-step:
     1) Align y_bin to cg index.
@@ -582,6 +771,17 @@ def filter_variants_by_pattern_threshold(cg: pd.DataFrame, block_variants: List[
        - drop variants that are monomorphic among observed calls or too sparse
          in either group (min_case/min_control)
     3) Return kept variants.
+
+    Why:
+    - This filter is NOT part of pyseer and must be OFF by default in pyseer-first
+      runs. When enabled, it acts as a guardrail against variants that provide
+      essentially no within-group information and can cause unstable estimates
+      (e.g. near-complete separation).
+    
+    Missing handling:
+    - If missing_mode=drop: NaNs do not match any allele -> behave as absence.
+    - If missing_mode=category: the missing token may appear as an allele. It is excluded
+      unless include_missing_allele=True.
 
     This function implements a PLINK-like QC step at the per-variant level:
     for each allele-specific variant (locus_allele), it examines the
@@ -624,13 +824,12 @@ def filter_variants_by_pattern_threshold(cg: pd.DataFrame, block_variants: List[
     minimum counts in both groups (min_case, min_control) ensures that the
     regression has enough within-group variance to estimate an effect, improving
     the stability and power of downstream Pyseer runs.
-
     """
     y_bin = y_bin.loc[cg.index]
     case_mask = (y_bin.values == 1)
     control_mask = (y_bin.values == 0)
     keep: List[str] = []
-    n_total = len(cg)
+    n = int(cg.shape[0])
     cols = cg.columns
     for v in block_variants:
         if "_" not in v:
@@ -638,33 +837,27 @@ def filter_variants_by_pattern_threshold(cg: pd.DataFrame, block_variants: List[
         locus, allele = v.split("_", 1)
         if locus not in cols:
             continue
-        col = cg[locus]
-        non_missing = ~col.isna()
-        if not non_missing.any():
+        # skip missing token if not allowed
+        if should_skip_allele(allele, include_missing_allele, missing_token):
             continue
-        col_nm = col[non_missing].astype(str).to_numpy()
-        present_nm = (col_nm == allele)
-        total_count = int(present_nm.sum())
-        n_obs = int(non_missing.sum())
-        # Monomorphic among observed calls => no information
-        if total_count == 0 or total_count == n_obs:
+        col_vals = cg[locus].to_numpy()
+        pattern = (col_vals == allele)
+        total_count = int(pattern.sum())
+        if total_count == 0 or total_count == n:
             continue
-        # Map case/control on observed-only subset
-        case_nm = case_mask[non_missing.to_numpy()]
-        control_nm = control_mask[non_missing.to_numpy()]
-        case_count = int((present_nm & case_nm).sum())
-        control_count = int((present_nm & control_nm).sum())
+        case_count = int((pattern & case_mask).sum())
+        control_count = int((pattern & control_mask).sum())
         if case_count < min_case or control_count < min_control:
             continue
         keep.append(v)
     if logger is not None:
-        logger.info(f"[THRESH] block_variants={len(block_variants)} → kept={len(keep)} "
-                    f"(min_case={min_case}, min_control={min_control}, N={n_total})")
+        logger.info(f"[THRESH] block_variants={len(block_variants)} → kept={len(keep)} " 
+                    f"(min_case={min_case}, min_control={min_control}, N={n}, include_missing_allele={include_missing_allele})")
     return keep
 
 def run_ovr_gwas_for_class(label: str, y_bin: pd.Series, cg: pd.DataFrame, distances_square_path: str, all_variants: List[str], pyseer_bin: str,
                            mds_components: int, block_size: int, workers: int, cpu_per_block: int, pyseer_extra_args: List[str], enable_case_control_filter: bool,
-                           min_case_count: int, min_control_count: int, enable_pattern_bonferroni: bool, utils_run_dir: str, logger: logging.Logger) -> Tuple[pd.DataFrame, Optional[str]]:
+                           min_case_count: int, min_control_count: int, enable_pattern_bonferroni: bool, utils_run_dir: str, logger: logging.Logger, include_missing_allele: bool, missing_token: str) -> Tuple[pd.DataFrame, Optional[str]]:
     """
     Run a one-vs-rest GWAS for one class using pyseer, in blocks.
 
@@ -679,7 +872,10 @@ def run_ovr_gwas_for_class(label: str, y_bin: pd.Series, cg: pd.DataFrame, dista
     - If enable_pattern_bonferroni=True, each block is run with pyseer --output-patterns
       (temp file), then all per-block pattern files are concatenated into a single
       shell-safe file under <utils_run_dir>/patterns/OVR_<safe_label>_patterns_all.txt.
-      
+
+    Returns
+    -------
+    (gwas_df, patterns_all_path)
     """
     label_fs = safe_label(label)
     n_pos = int(y_bin.sum())
@@ -695,8 +891,10 @@ def run_ovr_gwas_for_class(label: str, y_bin: pd.Series, cg: pd.DataFrame, dista
     errors_dir = os.path.join(utils_run_dir, "errors")
     if enable_pattern_bonferroni:
         os.makedirs(patterns_dir, exist_ok=True)
+    # Precompute string alleles ONCE per class (prevents float/int string mismatches)
+    cg_str = cg.astype("string")
     # Precompute once
-    cg_reset = cg.reset_index().rename(columns={cg.index.name or "index": "ceppoID"})
+    cg_reset = cg_str.reset_index().rename(columns={cg.index.name or "index": "ceppoID"})
     if "ceppoID" not in cg_reset.columns and "index" in cg_reset.columns:
         cg_reset = cg_reset.rename(columns={"index": "ceppoID"})
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -712,12 +910,14 @@ def run_ovr_gwas_for_class(label: str, y_bin: pd.Series, cg: pd.DataFrame, dista
             for bi, block_variants in enumerate(blocks):
                 if enable_case_control_filter:
                     filtered_block_variants = filter_variants_by_pattern_threshold(
-                        cg=cg,
+                        cg=cg_str,
                         block_variants=block_variants,
                         y_bin=y_bin,
                         min_case=min_case_count,
                         min_control=min_control_count,
-                        logger=logger)
+                        logger=logger,
+                        include_missing_allele=include_missing_allele,
+                        missing_token=missing_token)
                 else:
                     filtered_block_variants = block_variants
                 if not filtered_block_variants:
@@ -812,6 +1012,15 @@ def bh_fdr(pvals: np.ndarray) -> np.ndarray:
     - BH controls the expected false discovery rate under standard assumptions and
       is commonly used in microbial GWAS post-processing to obtain q-values.
 
+    Parameters
+    ----------
+    pvals : np.ndarray
+        1D array-like of raw p-values.
+
+    Returns
+    -------
+    np.ndarray
+        Array of q-values with the same shape as input. Non-finite p-values yield NaN q-values.
     """
     p = np.asarray(pvals, dtype=float)
     if p.ndim != 1:
@@ -848,6 +1057,25 @@ def run_count_patterns(count_patterns_path: str, patterns_all_path: str, alpha: 
     Saves stdout/stderr to out_dir (small, useful, reproducible). If `tag` is provided,
     outputs are saved as count_patterns_<tag>.stdout.txt / .stderr.txt to avoid overwrites.
 
+    Parameters
+    ----------
+    count_patterns_path : str
+        Path to count_patterns.py.
+    patterns_all_path : str
+        Path to concatenated patterns file for a class.
+    alpha : float
+        Family-wise alpha.
+    out_dir : str
+        Directory where stdout/stderr logs will be saved.
+    logger : logging.Logger
+        Logger instance.
+    tag : Optional[str]
+        Optional label used to disambiguate outputs per class (should be filesystem-safe).
+
+    Returns
+    -------
+    Optional[float]
+        Parsed p-value threshold, or None if not definable.
     """
     if not (0.0 < alpha <= 1.0):
         raise ValueError("alpha must be in (0, 1].")
@@ -938,6 +1166,8 @@ def main() -> None:
         args.log = os.path.join(args.out, "log.txt")
     logger = setup_logger(args.log)
     t0 = time.perf_counter()
+    monitor = ResourceMonitor(interval_sec=1.0)
+    monitor.start()
     # Per-run utils dir (minimal content by design)
     run_id = time.strftime("%Y%m%d_%H%M%S") + f"_{os.getpid()}"
     utils_run_dir = os.path.join(args.utils_dir, f"run_{run_id}")
@@ -1005,6 +1235,8 @@ def main() -> None:
     y_cat = y_cat.loc[common]
     classes = sorted(y_cat.unique().tolist())
     logger.info(f"[IO] aligned samples={len(common)} loci={cg.shape[1]} classes={classes} | {mem_usage_str()}")
+    # Normalize cgMLST missing values to NaN
+    cg = normalize_cgmlst_missing(cg, args.missing_mode, args.missing_token, logger) 
     # Optional QC: filter loci by missingness
     dropped_loci_missing: List[str] = []
     if args.max_locus_missing is not None:
@@ -1021,9 +1253,9 @@ def main() -> None:
         del D
         # Enumerate variants (optionally MAC-prefiltered)
         if getattr(args, "prefilter_mac", None) is not None:
-            all_variants = prefilter_variants_by_mac_per_locus(cg=cg, mac=args.prefilter_mac, logger=logger)
+            all_variants = prefilter_variants_by_mac_per_locus(cg=cg, mac=args.prefilter_mac, logger=logger, include_missing_allele=args.include_missing_allele, missing_token=args.missing_token)
         else:
-            all_variants = enumerate_variants_per_locus(cg=cg, logger=logger)
+            all_variants = enumerate_variants_per_locus(cg=cg, logger=logger, include_missing_allele=args.include_missing_allele, missing_token=args.missing_token)
         selection_enabled = bool(args.enable_bh or args.enable_pattern_bonferroni or (args.topk is not None))
         if not selection_enabled:
             logger.info("[SELECT] No wrapper-side selection enabled. Will still produce filtered cgMLST based on tested loci.")
@@ -1051,7 +1283,9 @@ def main() -> None:
                 min_control_count=args.min_control_count,
                 enable_pattern_bonferroni=args.enable_pattern_bonferroni,
                 utils_run_dir=utils_run_dir,
-                logger=logger)
+                logger=logger,
+                include_missing_allele=args.include_missing_allele,
+                missing_token=args.missing_token)
             del y_bin
             per_class_results[cls] = gwas_cls
             # Initialize stats consistently
@@ -1229,6 +1463,10 @@ def main() -> None:
     with open(selected_obj_path, "wb") as f:
         pickle.dump(payload, f)
     logger.info(f"[SAVE] {selected_obj_path}")
+    monitor.stop()
+    res_summary = monitor.summary()
+    dt = time.perf_counter() - t0
+    dt_min = dt / 60
     # 3) Write results.txt (always informative; selected if available, else top tested signals)
     results_path = os.path.join(args.out, "results.txt")
     with open(results_path, "w", encoding="utf-8") as f:
@@ -1252,6 +1490,19 @@ def main() -> None:
                 f"(alpha={args.alpha_patterns}, count_patterns={args.count_patterns})\n")
         f.write(f"topk={args.topk}\n")
         f.write(f"multi={args.multi}\n\n")
+        f.write("## Runtime & Resources\n")
+        f.write(f"runtime_minutes={dt_min:.2f}\n")
+        if res_summary["n_samples"] == 0:
+            f.write("resource_monitor=unavailable (psutil not installed or no samples)\n\n")
+        else:
+            f.write(f"resource_monitor_interval_sec={res_summary['interval_sec']}\n")
+            f.write(f"resource_samples={res_summary['n_samples']}\n")
+            f.write(f"rss_mean_mb={res_summary['rss_mean_mb']:.1f}\n")
+            f.write(f"rss_max_mb={res_summary['rss_max_mb']:.1f}\n")
+        if res_summary["cpu_mean_pct"] is not None:
+            f.write(f"cpu_mean_pct={res_summary['cpu_mean_pct']:.1f}\n")
+            f.write(f"cpu_max_pct={res_summary['cpu_max_pct']:.1f}\n")
+        f.write("\n")
         f.write("## Locus sets summary\n")
         f.write(f"selection_enabled={selection_enabled}\n")
         f.write(f"filtered_basis={filtered_basis}\n")
@@ -1306,13 +1557,19 @@ def main() -> None:
                     f.write(f"... (truncated, total_tests={len(df_cls)})\n")
             f.write("\n")
     logger.info(f"[SAVE] {results_path}")
-    dt = time.perf_counter() - t0
     logger.info(f"[END] done in {dt/60:.2f} min | {mem_usage_str()}")
-
 
 if __name__ == "__main__":
     main()
 
+### ML Ready
 
+# NO MISSING: python3 GWAS/GWAS_based_selector.py GWAS/GWAS_INPUT/3k_subset_cgMLST_monoID.csv GWAS/GWAS_INPUT/3k_subset_phenotypes_monoID.csv GWAS/GWAS_INPUT/3k_distance_clean.tsv --out GWAS/GWAS_OUTPUT/NO_MISSING_LABEL/top200 --log GWAS/GWAS_OUTPUT/NO_MISSING_LABEL/top200/log.txt --utils-dir GWAS/utils --pyseer pyseer --id-col id --phen-col target_IZSAM --block-size 2000 --workers 3 --cpu 3 --mds 10 --prefilter-mac 10 --max-locus-missing 0.05 --missing-mode category --missing-token __MISSING__ --pyseer-min-af 0.01 --enable-case-control-filter --min-case-count 3 --min-control-count 3 --enable-pattern-bonferroni --alpha-patterns 0.05 --count-patterns GWAS/count_patterns.py --enable-bh --bh-q 0.05 --topk 200 --multi union
+# WITH MISSING: python3 GWAS/GWAS_based_selector.py GWAS/GWAS_INPUT/3k_subset_cgMLST_monoID.csv GWAS/GWAS_INPUT/3k_subset_phenotypes_monoID.csv GWAS/GWAS_INPUT/3k_distance_clean.tsv --out GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/top200 --log GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/top200/log.txt --utils-dir GWAS/utils --pyseer pyseer --id-col id --phen-col target_IZSAM --block-size 2000 --workers 3 --cpu 3 --mds 10 --prefilter-mac 10 --max-locus-missing 0.05 --missing-mode category --missing-token __MISSING__ --include-missing-allele --pyseer-min-af 0.01 --enable-case-control-filter --min-case-count 3 --min-control-count 3 --enable-pattern-bonferroni --alpha-patterns 0.05 --count-patterns GWAS/count_patterns.py --enable-bh --bh-q 0.05 --topk 200 --multi union
+
+
+### Exploration
+
+# python3 GWAS/GWAS_based_selector.py GWAS/GWAS_INPUT/3k_subset_cgMLST_monoID.csv GWAS/GWAS_INPUT/3k_subset_phenotypes_monoID.csv GWAS/GWAS_INPUT/3k_distance_clean.tsv --out GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/normal --log GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/normal/log.txt --utils-dir GWAS/utils --pyseer pyseer --id-col id --phen-col target_IZSAM --block-size 2000 --workers 3 --cpu 3 --mds 10 --max-locus-missing 0.1 --missing-mode category --missing-token __MISSING__ --include-missing-allele --pyseer-min-af 0.001 --enable-case-control-filter --min-case-count 1 --min-control-count 1
 
 
