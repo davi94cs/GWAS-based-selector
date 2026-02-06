@@ -272,7 +272,17 @@ NOTE: BE SURE TO HAVE THE SCRIPT "count_patterns.py" (from pyseer repository) IN
 Example of usage pattern from cli:
 
 ```bash
-python3 GWAS_based_selector.py GWAS_INPUT/cgMLST.csv GWAS_INPUT/phenotypes.csv GWAS_INPUT/distance_matrix.tsv --out GWAS_OUTPUT/top_25 --log GWAS_OUTPUT/top_25/log.txt --utils-dir utils --pyseer pyseer --id-col id --phen-col phenotype --block-size 2000 --workers 3 --cpu 3 --mds 10 --prefilter-mac 10 --max-locus-missing 0.05 --pyseer-min-af 0.002 --pyseer-filter-pvalue 1e-3 --pyseer-lrt-pvalue 1e-3 --pyseer-print-filtered --enable-case-control-filter --min-case-count 3 --min-control-count 3 --enable-pattern-bonferroni --alpha-patterns 0.05 --count-patterns count_patterns.py --enable-bh --bh-q 0.01 --topk 25 --multi union
+
+### feature selection task --> for fast and low risk overfitting-ML pipeline 
+
+# NO MISSING: python3 GWAS/GWAS_based_selector.py GWAS/GWAS_INPUT/3k_subset_cgMLST_monoID.csv GWAS/GWAS_INPUT/3k_subset_phenotypes_monoID.csv GWAS/GWAS_INPUT/3k_distance_clean.tsv --out GWAS/GWAS_OUTPUT/NO_MISSING_LABEL/top200 --log GWAS/GWAS_OUTPUT/NO_MISSING_LABEL/top200/log.txt --utils-dir GWAS/utils --pyseer pyseer --id-col id --phen-col target_IZSAM --block-size 2000 --workers 3 --cpu 3 --mds 10 --prefilter-mac 10 --max-locus-missing 0.05 --missing-mode category --missing-token __MISSING__ --pyseer-min-af 0.01 --enable-case-control-filter --min-case-count 3 --min-control-count 3 --enable-pattern-bonferroni --alpha-patterns 0.05 --count-patterns GWAS/count_patterns.py --enable-bh --bh-q 0.05 --topk 200 --multi union
+
+# WITH MISSING: python3 GWAS/GWAS_based_selector.py GWAS/GWAS_INPUT/3k_subset_cgMLST_monoID.csv GWAS/GWAS_INPUT/3k_subset_phenotypes_monoID.csv GWAS/GWAS_INPUT/3k_distance_clean.tsv --out GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/top200 --log GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/top200/log.txt --utils-dir GWAS/utils --pyseer pyseer --id-col id --phen-col target_IZSAM --block-size 2000 --workers 3 --cpu 3 --mds 10 --prefilter-mac 10 --max-locus-missing 0.05 --missing-mode category --missing-token __MISSING__ --include-missing-allele --pyseer-min-af 0.01 --enable-case-control-filter --min-case-count 3 --min-control-count 3 --enable-pattern-bonferroni --alpha-patterns 0.05 --count-patterns GWAS/count_patterns.py --enable-bh --bh-q 0.05 --topk 200 --multi union
+
+
+### Exploration task --> biological research
+
+# python3 GWAS/GWAS_based_selector.py GWAS/GWAS_INPUT/3k_subset_cgMLST_monoID.csv GWAS/GWAS_INPUT/3k_subset_phenotypes_monoID.csv GWAS/GWAS_INPUT/3k_distance_clean.tsv --out GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/normal --log GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/normal/log.txt --utils-dir GWAS/utils --pyseer pyseer --id-col id --phen-col target_IZSAM --block-size 2000 --workers 3 --cpu 3 --mds 10 --max-locus-missing 0.1 --missing-mode category --missing-token __MISSING__ --include-missing-allele --pyseer-min-af 0.001 --enable-case-control-filter --min-case-count 1 --min-control-count 1
 
 ```
 
