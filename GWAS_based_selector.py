@@ -1561,15 +1561,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-### ML Ready
-
-# NO MISSING: python3 GWAS/GWAS_based_selector.py GWAS/GWAS_INPUT/3k_subset_cgMLST_monoID.csv GWAS/GWAS_INPUT/3k_subset_phenotypes_monoID.csv GWAS/GWAS_INPUT/3k_distance_clean.tsv --out GWAS/GWAS_OUTPUT/NO_MISSING_LABEL/top200 --log GWAS/GWAS_OUTPUT/NO_MISSING_LABEL/top200/log.txt --utils-dir GWAS/utils --pyseer pyseer --id-col id --phen-col target_IZSAM --block-size 2000 --workers 3 --cpu 3 --mds 10 --prefilter-mac 10 --max-locus-missing 0.05 --missing-mode category --missing-token __MISSING__ --pyseer-min-af 0.01 --enable-case-control-filter --min-case-count 3 --min-control-count 3 --enable-pattern-bonferroni --alpha-patterns 0.05 --count-patterns GWAS/count_patterns.py --enable-bh --bh-q 0.05 --topk 200 --multi union
-# WITH MISSING: python3 GWAS/GWAS_based_selector.py GWAS/GWAS_INPUT/3k_subset_cgMLST_monoID.csv GWAS/GWAS_INPUT/3k_subset_phenotypes_monoID.csv GWAS/GWAS_INPUT/3k_distance_clean.tsv --out GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/top200 --log GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/top200/log.txt --utils-dir GWAS/utils --pyseer pyseer --id-col id --phen-col target_IZSAM --block-size 2000 --workers 3 --cpu 3 --mds 10 --prefilter-mac 10 --max-locus-missing 0.05 --missing-mode category --missing-token __MISSING__ --include-missing-allele --pyseer-min-af 0.01 --enable-case-control-filter --min-case-count 3 --min-control-count 3 --enable-pattern-bonferroni --alpha-patterns 0.05 --count-patterns GWAS/count_patterns.py --enable-bh --bh-q 0.05 --topk 200 --multi union
-
-
-### Exploration
-
-# python3 GWAS/GWAS_based_selector.py GWAS/GWAS_INPUT/3k_subset_cgMLST_monoID.csv GWAS/GWAS_INPUT/3k_subset_phenotypes_monoID.csv GWAS/GWAS_INPUT/3k_distance_clean.tsv --out GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/normal --log GWAS/GWAS_OUTPUT/WITH_MISSING_LABEL/normal/log.txt --utils-dir GWAS/utils --pyseer pyseer --id-col id --phen-col target_IZSAM --block-size 2000 --workers 3 --cpu 3 --mds 10 --max-locus-missing 0.1 --missing-mode category --missing-token __MISSING__ --include-missing-allele --pyseer-min-af 0.001 --enable-case-control-filter --min-case-count 1 --min-control-count 1
-
-
