@@ -73,12 +73,8 @@ def parse_args() -> argparse.Namespace:
     - RTAB (--pres) must be strictly binary in pyseer; missing cgMLST calls are
       encoded as 0. To mitigate bias, an optional locus-level missingness QC
       can be enabled via --max-locus-missing.
-
-    Returns
-    -------
-    argparse.Namespace
-        Parsed arguments.
     """
+    
     ap = argparse.ArgumentParser(description="Pyseer-first multiclass (OVR) GWAS on cgMLST using a square distance matrix.")
     # Future-proof flags (NOT implemented yet, just accepted)
     ap.add_argument("--mut-type", default="cgmlst", help="Mutation type (future). Currently supported: cgmlst, wgmlst.")
@@ -244,21 +240,8 @@ def setup_logger(log_path: str, level_console: int = logging.INFO, level_file: i
     - Re-running the tool (or importing it in notebooks/tests) can otherwise lead
       to duplicated log lines or logs being written to an unintended previous file.
     - Stable, always-present logs are part of the required artifacts (log.txt).
-
-    Parameters
-    ----------
-    log_path : str
-        Path to the log file to create/overwrite.
-    level_console : int
-        Logging level for console output (stdout).
-    level_file : int
-        Logging level for file output.
-
-    Returns
-    -------
-    logging.Logger
-        Configured logger instance.
     """
+    
     os.makedirs(os.path.dirname(os.path.abspath(log_path)), exist_ok=True)
     logger = logging.getLogger("GWAS_selector")
     logger.setLevel(logging.DEBUG)
@@ -702,22 +685,15 @@ def run_pyseer_block(pyseer_bin: str, phen_path: str, distances_square_path: str
     - If patterns_out_path is provided, pyseer is invoked with:
         --output-patterns <patterns_out_path>
       This should be used only when pattern-based Bonferroni is enabled.
-
-    Parameters
-    ----------
-    patterns_out_path : Optional[str]
-        If provided, enables pyseer native pattern hashing output for this block.
-    utils_error_dir : Optional[str]
-        If provided, stores cmd/stderr files on failure only.
     """
+                         
     cmd = [
         pyseer_bin,
         "--phenotypes", phen_path,
         "--pres", rtab_path,
         "--distances", distances_square_path,
         "--max-dimensions", str(mds_components),
-        "--cpu", str(cpu_per_block),
-    ]
+        "--cpu", str(cpu_per_block)]
     if patterns_out_path is not None:
         cmd += ["--output-patterns", patterns_out_path]
     cmd += list(pyseer_extra_args)
@@ -1011,17 +987,8 @@ def bh_fdr(pvals: np.ndarray) -> np.ndarray:
     Why:
     - BH controls the expected false discovery rate under standard assumptions and
       is commonly used in microbial GWAS post-processing to obtain q-values.
-
-    Parameters
-    ----------
-    pvals : np.ndarray
-        1D array-like of raw p-values.
-
-    Returns
-    -------
-    np.ndarray
-        Array of q-values with the same shape as input. Non-finite p-values yield NaN q-values.
     """
+    
     p = np.asarray(pvals, dtype=float)
     if p.ndim != 1:
         raise ValueError("bh_fdr expects a 1D array of p-values.")
@@ -1056,27 +1023,8 @@ def run_count_patterns(count_patterns_path: str, patterns_all_path: str, alpha: 
 
     Saves stdout/stderr to out_dir (small, useful, reproducible). If `tag` is provided,
     outputs are saved as count_patterns_<tag>.stdout.txt / .stderr.txt to avoid overwrites.
-
-    Parameters
-    ----------
-    count_patterns_path : str
-        Path to count_patterns.py.
-    patterns_all_path : str
-        Path to concatenated patterns file for a class.
-    alpha : float
-        Family-wise alpha.
-    out_dir : str
-        Directory where stdout/stderr logs will be saved.
-    logger : logging.Logger
-        Logger instance.
-    tag : Optional[str]
-        Optional label used to disambiguate outputs per class (should be filesystem-safe).
-
-    Returns
-    -------
-    Optional[float]
-        Parsed p-value threshold, or None if not definable.
     """
+    
     if not (0.0 < alpha <= 1.0):
         raise ValueError("alpha must be in (0, 1].")
     if not os.path.exists(count_patterns_path):
